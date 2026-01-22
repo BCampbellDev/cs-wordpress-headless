@@ -1,4 +1,4 @@
-name: cs-wordpress-blocks
+name: cs-wordpress-headless
 recipe: wordpress
 config:
   webroot: .
@@ -6,6 +6,8 @@ config:
   xdebug: true
 services:
   appserver:
+    build:
+      - a2enmod rewrite
     overrides:
       environment:
         XDEBUG_MODE: debug,develop
