@@ -1,0 +1,12 @@
+name: cs-wordpress-blocks
+recipe: wordpress
+config:
+  webroot: .
+  php: "8.3"
+  xdebug: true
+services:
+  appserver:
+    overrides:
+      environment:
+        XDEBUG_MODE: debug,develop
+        XDEBUG_START_WITH_REQUEST: "yes"

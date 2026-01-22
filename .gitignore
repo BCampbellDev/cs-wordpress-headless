@@ -1,0 +1,28 @@
+.DS_Store
+Thumbs.db
+.vscode/*
+
+# WordPress
+/wp-config.php
+/wp-content/uploads/
+/wp-content/cache/
+/wp-content/upgrade/
+/wp-content/backup*/
+/wp-content/backups/
+/wp-content/blogs.dir/
+/wp-content/wflogs/
+/wp-content/ai1wm-backups/
+/wp-content/updraft/
+/wp-content/backup-db/
+/wp-content/et-cache/
+/wp-content/endurance-page-cache/
+/wp-content/litespeed/
+/wp-content/plugins/hello.php
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
