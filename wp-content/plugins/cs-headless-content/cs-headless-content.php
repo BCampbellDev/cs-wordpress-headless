@@ -55,6 +55,7 @@ add_action('init', function () {
 		'supports'            => ['title', 'editor', 'excerpt', 'thumbnail', 'revisions'],
 		'has_archive'         => true,
 		'rewrite'             => ['slug' => 'resources'],
+		'supports' => ['title', 'editor', 'excerpt', 'thumbnail', 'revisions', 'custom-fields'],
 	]);
 
 	// Resource: external URL
@@ -72,6 +73,19 @@ add_action('init', function () {
 		'single'       => true,
 		'show_in_rest' => true,
 		'show_in_graphql' => true,
+	]);
+
+	register_post_meta('resource', 'cs_featured', [
+		'type'              => 'boolean',
+		'single'            => true,
+		'default'           => false,
+		'show_in_rest'      => true,
+		'auth_callback'     => function () {
+			return current_user_can('edit_posts');
+		},
+		'sanitize_callback' => function ($value) {
+			return (bool) $value;
+		},
 	]);
 
 	/**
@@ -101,8 +115,8 @@ add_action('init', function () {
 		'public'              => true,
 		'show_in_rest'        => true,
 		'show_in_graphql' => true,
-		'graphql_single_name' => 'People',
-		'graphql_plural_name' => 'Peoples',
+		'graphql_single_name' => 'Person',
+		'graphql_plural_name' => 'People',
 		'rest_base'           => 'people',
 		'menu_icon'           => 'dashicons-groups',
 		'supports'            => ['title', 'editor', 'thumbnail', 'revisions'],
@@ -119,6 +133,26 @@ add_action('init', function () {
 	]);
 
 	/**
+	 * CPT: Group
+	 * Think: a named bucket that People can belong to (e.g. “Founders”, “Editors”, “Contributors”).
+	 */
+	register_post_type('group', [
+		'label'               => 'Groups',
+		'public'              => true,
+		'show_in_rest'        => true,
+		'rest_base'           => 'groups',
+		'menu_icon'           => 'dashicons-groups',
+		'supports'            => ['title', 'editor', 'revisions'],
+		'has_archive'         => true,
+		'rewrite'             => ['slug' => 'groups'],
+
+		// GraphQL
+		'show_in_graphql'     => true,
+		'graphql_single_name' => 'Group',
+		'graphql_plural_name' => 'Groups',
+	]);
+
+	/**
 	 * Optional taxonomy for Resource only (nice for headless filtering).
 	 */
 	register_taxonomy('resource_type', ['resource'], [
@@ -127,9 +161,53 @@ add_action('init', function () {
 		'hierarchical'  => false, // tag-like
 		'show_in_rest'  => true,
 		'show_in_graphql' => true,
+		'graphql_single_name' => 'ResourceType',
+		'graphql_plural_name' => 'ResourceTypes',
 		'rewrite'       => ['slug' => 'resource-types'],
 	]);
 }, 0);
+
+add_action('add_meta_boxes', function () {
+	add_meta_box(
+		'cs_resource_featured',
+		'Featured',
+		'cs_resource_featured_metabox',
+		'resource',
+		'side',
+		'high'
+	);
+});
+
+function cs_resource_featured_metabox($post)
+{
+	$value = (bool) get_post_meta($post->ID, 'cs_featured', true);
+
+	wp_nonce_field(
+		'cs_resource_featured_save',
+		'cs_resource_featured_nonce'
+	);
+?>
+	<label style="display:flex;align-items:center;gap:8px;">
+		<input
+			type="checkbox"
+			name="cs_featured"
+			value="1"
+			<?php checked($value); ?> />
+		Mark this Resource as featured
+	</label>
+<?php
+}
+
+add_action('save_post_resource', function ($post_id) {
+	if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
+	if (! isset($_POST['cs_resource_featured_nonce'])) return;
+	if (! wp_verify_nonce($_POST['cs_resource_featured_nonce'], 'cs_resource_featured_save')) return;
+	if (! current_user_can('edit_post', $post_id)) return;
+
+	$featured = isset($_POST['cs_featured']) ? true : false;
+
+	update_post_meta($post_id, 'cs_featured', $featured);
+});
 
 add_action('template_redirect', function () {
 	// Allow wp-admin, login, and REST API
