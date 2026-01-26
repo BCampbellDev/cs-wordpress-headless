@@ -1,0 +1,1 @@
+usage: wp post meta get <id> <key> [--single] [--format=<format>]

@@ -1,0 +1,2 @@
+schema: "https://cs-wordpress-headless.lndo.site/graphql"
+documents: "**/*.{graphql,gql,js,ts,jsx,tsx}"
