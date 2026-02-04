@@ -165,6 +165,99 @@ add_action('init', function () {
 		'graphql_plural_name' => 'ResourceTypes',
 		'rewrite'       => ['slug' => 'resource-types'],
 	]);
+
+	/**
+	 * CPT: NPS Alert
+	 * Ingested from NPS Alerts API, but editable by humans.
+	 * Editors can optionally lock title/content/excerpt from being overwritten by the sync job.
+	 */
+	register_post_type('nps_alert', [
+		'label'               => 'NPS Alerts',
+		'public'              => true,
+		'show_in_rest'        => true,
+		'rest_base'           => 'nps-alerts',
+		'menu_icon'           => 'dashicons-warning',
+		'supports'            => ['title', 'editor', 'excerpt', 'thumbnail', 'revisions'],
+		'has_archive'         => true,
+		'rewrite'             => ['slug' => 'nps-alerts'],
+
+		// GraphQL
+		'show_in_graphql'     => true,
+		'graphql_single_name' => 'NpsAlert',
+		'graphql_plural_name' => 'NpsAlerts',
+	]);
+
+	// NPS: external UUID id (canonical upsert key)
+	register_post_meta('nps_alert', 'nps_id', [
+		'type'              => 'string',
+		'single'            => true,
+		'show_in_rest'      => true,
+		'show_in_graphql'   => true,
+		'sanitize_callback' => 'sanitize_text_field',
+	]);
+
+	// NPS: parkCode (e.g. "cane")
+	register_post_meta('nps_alert', 'nps_park_code', [
+		'type'              => 'string',
+		'single'            => true,
+		'show_in_rest'      => true,
+		'show_in_graphql'   => true,
+		'sanitize_callback' => 'sanitize_key',
+	]);
+
+	// NPS: category (e.g. "Park Closure")
+	register_post_meta('nps_alert', 'nps_category', [
+		'type'              => 'string',
+		'single'            => true,
+		'show_in_rest'      => true,
+		'show_in_graphql'   => true,
+		'sanitize_callback' => 'sanitize_text_field',
+	]);
+
+	// NPS: source url
+	register_post_meta('nps_alert', 'nps_url', [
+		'type'              => 'string',
+		'single'            => true,
+		'show_in_rest'      => true,
+		'show_in_graphql'   => true,
+		'sanitize_callback' => 'esc_url_raw',
+	]);
+
+	// NPS: lastIndexedDate as a string (you can convert to datetime later in Laravel)
+	register_post_meta('nps_alert', 'nps_last_indexed_date', [
+		'type'              => 'string',
+		'single'            => true,
+		'show_in_rest'      => true,
+		'show_in_graphql'   => true,
+		'sanitize_callback' => 'sanitize_text_field',
+	]);
+
+	// NPS: relatedRoadEvents raw JSON (optional)
+	register_post_meta('nps_alert', 'nps_related_road_events_json', [
+		'type'              => 'string',
+		'single'            => true,
+		'show_in_rest'      => true,
+		'show_in_graphql'   => true,
+		'sanitize_callback' => function ($value) {
+			// store as string; Node can send JSON.stringify(...)
+			return is_string($value) ? $value : wp_json_encode($value);
+		},
+	]);
+
+	// Editorial lock: if true, your sync job should not overwrite title/content/excerpt
+	register_post_meta('nps_alert', 'editor_lock', [
+		'type'              => 'boolean',
+		'single'            => true,
+		'default'           => false,
+		'show_in_rest'      => true,
+		'show_in_graphql'   => true,
+		'auth_callback'     => function () {
+			return current_user_can('edit_posts');
+		},
+		'sanitize_callback' => function ($value) {
+			return (bool) $value;
+		},
+	]);
 }, 0);
 
 add_action('add_meta_boxes', function () {
@@ -173,6 +266,16 @@ add_action('add_meta_boxes', function () {
 		'Featured',
 		'cs_resource_featured_metabox',
 		'resource',
+		'side',
+		'high'
+	);
+
+	// NEW: NPS Alert source + lock
+	add_meta_box(
+		'cs_nps_alert_source',
+		'NPS Source',
+		'cs_nps_alert_source_metabox',
+		'nps_alert',
 		'side',
 		'high'
 	);
@@ -198,6 +301,46 @@ function cs_resource_featured_metabox($post)
 <?php
 }
 
+function cs_nps_alert_source_metabox($post)
+{
+	$editor_lock = (bool) get_post_meta($post->ID, 'editor_lock', true);
+
+	$nps_id   = (string) get_post_meta($post->ID, 'nps_id', true);
+	$park     = (string) get_post_meta($post->ID, 'nps_park_code', true);
+	$category = (string) get_post_meta($post->ID, 'nps_category', true);
+	$url      = (string) get_post_meta($post->ID, 'nps_url', true);
+	$indexed  = (string) get_post_meta($post->ID, 'nps_last_indexed_date', true);
+
+	wp_nonce_field(
+		'cs_nps_alert_save',
+		'cs_nps_alert_nonce'
+	);
+?>
+	<label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+		<input
+			type="checkbox"
+			name="editor_lock"
+			value="1"
+			<?php checked($editor_lock); ?> />
+		Lock editor fields (sync won’t overwrite title/content/excerpt)
+	</label>
+
+	<div style="font-size:12px;line-height:1.4;">
+		<div><strong>NPS ID:</strong> <?php echo esc_html($nps_id ?: '—'); ?></div>
+		<div><strong>Park:</strong> <?php echo esc_html($park ?: '—'); ?></div>
+		<div><strong>Category:</strong> <?php echo esc_html($category ?: '—'); ?></div>
+		<div><strong>Last Indexed:</strong> <?php echo esc_html($indexed ?: '—'); ?></div>
+		<div><strong>Source:</strong>
+			<?php if ($url) : ?>
+				<a href="<?php echo esc_url($url); ?>" target="_blank" rel="noopener noreferrer">Open</a>
+			<?php else : ?>
+				—
+			<?php endif; ?>
+		</div>
+	</div>
+<?php
+}
+
 add_action('save_post_resource', function ($post_id) {
 	if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
 	if (! isset($_POST['cs_resource_featured_nonce'])) return;
@@ -207,6 +350,16 @@ add_action('save_post_resource', function ($post_id) {
 	$featured = isset($_POST['cs_featured']) ? true : false;
 
 	update_post_meta($post_id, 'cs_featured', $featured);
+});
+
+add_action('save_post_nps_alert', function ($post_id) {
+	if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
+	if (! isset($_POST['cs_nps_alert_nonce'])) return;
+	if (! wp_verify_nonce($_POST['cs_nps_alert_nonce'], 'cs_nps_alert_save')) return;
+	if (! current_user_can('edit_post', $post_id)) return;
+
+	$editor_lock = isset($_POST['editor_lock']) ? true : false;
+	update_post_meta($post_id, 'editor_lock', $editor_lock);
 });
 
 add_action('template_redirect', function () {

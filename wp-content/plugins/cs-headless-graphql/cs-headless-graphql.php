@@ -8,6 +8,17 @@
  * Requires Plugins:  wp-graphql, cs-headless-content
  */
 
+add_action('init', function () {
+	$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '';
+	$is_graphql = ($path === '/graphql' || str_ends_with($path, '/graphql'));
+
+	if ($is_graphql) {
+		$auth = $_SERVER['HTTP_AUTHORIZATION'] ?? ($_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null);
+		error_log('GRAPHQL PATH HIT. AUTH HEADER? ' . ($auth ? 'yes' : 'no'));
+		if ($auth) error_log('AUTH PREFIX: ' . substr($auth, 0, 10)); // "Basic ...."
+	}
+}, 0);
+
 // if (! defined('ABSPATH')) {
 // 	exit;
 // }
@@ -31,6 +42,22 @@
 // if (! cs_hg_is_wpgraphql_active()) {
 // 	return;
 // }
+
+function cs_graphql_require_editor_capability()
+{
+	// If already authenticated via cookie/session:
+	if (is_user_logged_in() && current_user_can('edit_posts')) {
+		return;
+	}
+
+	// If using Basic Auth / Application Passwords, WordPress should set the current user.
+	$user = wp_get_current_user();
+	if ($user && $user->ID && user_can($user, 'edit_posts')) {
+		return;
+	}
+
+	throw new \GraphQL\Error\UserError('Not authorized.');
+}
 
 add_action('graphql_register_types', function () {
 
@@ -143,6 +170,42 @@ add_action('graphql_register_types', function () {
 
 			return array_values(array_filter($people));
 		},
+	]);
+
+	// --- Expose NPS Alert meta fields explicitly on the NpsAlert GraphQL type ---
+	register_graphql_field('NpsAlert', 'npsId', [
+		'type' => 'String',
+		'resolve' => fn($post) => get_post_meta($post->ID, 'nps_id', true),
+	]);
+
+	register_graphql_field('NpsAlert', 'npsParkCode', [
+		'type' => 'String',
+		'resolve' => fn($post) => get_post_meta($post->ID, 'nps_park_code', true),
+	]);
+
+	register_graphql_field('NpsAlert', 'npsCategory', [
+		'type' => 'String',
+		'resolve' => fn($post) => get_post_meta($post->ID, 'nps_category', true),
+	]);
+
+	register_graphql_field('NpsAlert', 'npsUrl', [
+		'type' => 'String',
+		'resolve' => fn($post) => get_post_meta($post->ID, 'nps_url', true),
+	]);
+
+	register_graphql_field('NpsAlert', 'npsLastIndexedDate', [
+		'type' => 'String',
+		'resolve' => fn($post) => get_post_meta($post->ID, 'nps_last_indexed_date', true),
+	]);
+
+	register_graphql_field('NpsAlert', 'npsRelatedRoadEventsJson', [
+		'type' => 'String',
+		'resolve' => fn($post) => get_post_meta($post->ID, 'nps_related_road_events_json', true),
+	]);
+
+	register_graphql_field('NpsAlert', 'editorLock', [
+		'type' => 'Boolean',
+		'resolve' => fn($post) => (bool) get_post_meta($post->ID, 'editor_lock', true),
 	]);
 
 	/**
@@ -295,9 +358,12 @@ add_action('graphql_register_types', function () {
 		],
 		'mutateAndGetPayload' => function ($input) {
 
-			if (! is_user_logged_in()) {
-				throw new \GraphQL\Error\UserError('Not authorized.');
-			}
+			// $user = wp_get_current_user();
+			// error_log('GRAPHQL USER: ' . ($user && $user->ID ? $user->user_login : 'none'));
+
+			// if (! is_user_logged_in()) {
+			// 	throw new \GraphQL\Error\UserError('Not authorized.');
+			// }
 
 			$person_id = isset($input['personId']) ? (int) $input['personId'] : 0;
 			$group_id  = isset($input['groupId']) ? (int) $input['groupId'] : 0;
@@ -347,6 +413,147 @@ add_action('graphql_register_types', function () {
 				'personId' => $person_id,
 				'added'    => $added,
 				'groupIds' => $existing,
+			];
+		},
+	]);
+
+	register_graphql_input_type('UpsertNpsAlertInput', [
+		'description' => 'Input for upserting an NPS Alert.',
+		'fields' => [
+			'npsId' => ['type' => ['non_null' => 'String']],
+			'npsParkCode' => ['type' => 'String'],
+			'npsCategory' => ['type' => 'String'],
+			'npsUrl' => ['type' => 'String'],
+			'npsLastIndexedDate' => ['type' => 'String'],
+			'npsRelatedRoadEventsJson' => ['type' => 'String'],
+			'description'  => ['type' => 'String'],
+
+			// Editorial-facing defaults (only applied if not editor-locked)
+			'title' => ['type' => 'String'],
+			'content' => ['type' => 'String'],
+			'excerpt' => ['type' => 'String'],
+
+			// Optional: choose publish vs draft on create
+			'status' => ['type' => 'String'], // 'publish' | 'draft'
+		],
+	]);
+
+	register_graphql_mutation('upsertNpsAlert', [
+		'inputFields' => [
+			'input' => ['type' => ['non_null' => 'UpsertNpsAlertInput']],
+		],
+		'outputFields' => [
+			'created' => [
+				'type' => 'Boolean',
+			],
+			'alertId' => [
+				'type' => 'Int',
+			],
+			'alert' => [
+				'type' => 'NpsAlert',
+				'resolve' => function ($payload, $args, $context) {
+					if (empty($payload['alertId'])) return null;
+
+					$post = get_post((int) $payload['alertId']);
+					if (! $post) return null;
+
+					// Wrap so WPGraphQL knows how to resolve fields like databaseId
+					return new \WPGraphQL\Model\Post($post);
+				},
+			],
+		],
+		'mutateAndGetPayload' => function ($input, $context, $info) {
+			cs_graphql_require_editor_capability();
+
+			$nps_id = isset($input['npsId']) ? sanitize_text_field($input['npsId']) : '';
+			if ($nps_id === '') {
+				throw new \GraphQL\Error\UserError('npsId is required.');
+			}
+
+			// 1) Find existing by meta nps_id
+			$existing = get_posts([
+				'post_type'  => 'nps_alert',
+				'post_status' => 'any',
+				'meta_key'   => 'nps_id',
+				'meta_value' => $nps_id,
+				'fields'     => 'ids',
+				'numberposts' => 1,
+			]);
+
+			$created = false;
+			$post_id = !empty($existing) ? (int)$existing[0] : 0;
+
+			// 2) Create if missing
+			if (!$post_id) {
+				$status = isset($input['status']) ? sanitize_key($input['status']) : 'draft';
+				if (!in_array($status, ['draft', 'publish'], true)) {
+					$status = 'draft';
+				}
+
+				$post_id = wp_insert_post([
+					'post_type'   => 'nps_alert',
+					'post_status' => $status,
+					'post_title'  => isset($input['title']) ? sanitize_text_field($input['title']) : 'NPS Alert',
+					'post_content' => isset($input['content']) ? wp_kses_post($input['content']) : '',
+					'post_excerpt' => isset($input['excerpt']) ? sanitize_text_field($input['excerpt']) : '',
+				], true);
+
+				if (is_wp_error($post_id)) {
+					throw new \GraphQL\Error\UserError($post_id->get_error_message());
+				}
+
+				$created = true;
+			}
+
+			// 3) Always update machine meta
+			update_post_meta($post_id, 'nps_id', $nps_id);
+
+			if (isset($input['npsParkCode'])) {
+				update_post_meta($post_id, 'nps_park_code', sanitize_key($input['npsParkCode']));
+			}
+			if (isset($input['npsCategory'])) {
+				update_post_meta($post_id, 'nps_category', sanitize_text_field($input['npsCategory']));
+			}
+			if (isset($input['npsUrl'])) {
+				update_post_meta($post_id, 'nps_url', esc_url_raw($input['npsUrl']));
+			}
+			if (isset($input['npsLastIndexedDate'])) {
+				update_post_meta($post_id, 'nps_last_indexed_date', sanitize_text_field($input['npsLastIndexedDate']));
+			}
+			if (isset($input['npsRelatedRoadEventsJson'])) {
+				update_post_meta($post_id, 'nps_related_road_events_json', is_string($input['npsRelatedRoadEventsJson']) ? $input['npsRelatedRoadEventsJson'] : wp_json_encode($input['npsRelatedRoadEventsJson']));
+			}
+
+			// 4) Only update title/content/excerpt if not editor-locked OR newly created
+			$locked = (bool)get_post_meta($post_id, 'editor_lock', true);
+
+			if ($created || !$locked) {
+				$update = [
+					'ID' => $post_id,
+				];
+
+				if (isset($input['title'])) {
+					$update['post_title'] = sanitize_text_field($input['title']);
+				}
+				if (isset($input['content'])) {
+					$update['post_content'] = wp_kses_post($input['content']);
+				}
+				if (isset($input['excerpt'])) {
+					$update['post_excerpt'] = sanitize_text_field($input['excerpt']);
+				}
+
+				// Only call wp_update_post if we actually have something to update
+				if (count($update) > 1) {
+					$r = wp_update_post($update, true);
+					if (is_wp_error($r)) {
+						throw new \GraphQL\Error\UserError($r->get_error_message());
+					}
+				}
+			}
+
+			return [
+				'created' => $created,
+				'alertId' => (int)$post_id,
 			];
 		},
 	]);
