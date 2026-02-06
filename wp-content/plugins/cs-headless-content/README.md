@@ -19,11 +19,13 @@ pure content platform in a modern, headless architecture.
 This plugin is responsible **only for content modeling**, not API logic.
 
 It defines custom post types, taxonomies, and metadata that are consumed by:
+
 - WPGraphQL
 - A Node.js API gateway
 - Future Next.js / React frontends
 
 The goal is to showcase **clean separation of concerns**:
+
 - WordPress → editorial UI + content storage
 - GraphQL → API schema
 - Node.js → orchestration, pipelines, integrations
@@ -35,6 +37,7 @@ The goal is to showcase **clean separation of concerns**:
 General knowledge objects such as tutorials, tools, or links.
 
 Fields:
+
 - Title
 - Content
 - Excerpt
@@ -48,6 +51,7 @@ Fields:
 Curated groupings of Resources.
 
 Fields:
+
 - Title
 - Content
 - Topics taxonomy
@@ -56,6 +60,7 @@ Fields:
 People independent of WordPress users.
 
 Fields:
+
 - Title (name)
 - Content (bio)
 - Role meta field
@@ -64,6 +69,7 @@ Fields:
 Logical groupings of People.
 
 Examples:
+
 - Editors
 - Contributors
 - Founders
@@ -74,11 +80,13 @@ Used in conjunction with custom GraphQL mutations to associate People ↔ Groups
 Machine‑generated content synced from the U.S. National Park Service API.
 
 Purpose:
+
 - Demonstrates ingesting third‑party data
 - Supports editor overrides
 - Acts as a bridge between external APIs and editorial workflows
 
 Fields:
+
 - NPS Alert ID (external unique ID)
 - Park code
 - Category
@@ -112,8 +120,48 @@ This enables predictable demo data for GraphQL and Node.js pipelines.
 - No API orchestration
 
 Those concerns are handled by:
+
 - `cs-headless-graphql`
 - `cs-node-headless-api`
+
+== WordPress → Node Webhook: NPS Alert Publish Events ==
+
+As part of the headless pipeline case study, this plugin emits a webhook event
+whenever an **NPS Alert post transitions to a new status**, most importantly
+when it is **published**.
+
+This demonstrates how WordPress can act as an **event source** in a modern
+distributed system.
+
+=== Purpose ===
+
+The webhook enables downstream systems to react to editorial actions, such as:
+
+- Notifying a Node.js API gateway that an alert is now public
+- Allowing the gateway to forward publish state to Laravel
+- Keeping dashboards and external systems in sync with WordPress editorial status
+
+This avoids polling and reinforces an **event-driven architecture**.
+
+=== Triggered Events ===
+
+The webhook is fired on post status transitions for the `nps_alert` post type,
+including:
+
+- draft → publish
+- scheduled → publish
+- publish → draft (unpublish)
+- publish → private
+
+The payload includes both the **previous** and **new** status so consumers can
+decide how to react.
+
+=== Webhook Destination ===
+
+The webhook URL is configurable via environment or constant and is expected to
+point to the Node.js API gateway.
+
+Example (local development):
 
 == Installation ==
 
@@ -125,10 +173,12 @@ Those concerns are handled by:
 == Changelog ==
 
 = 0.2.0 =
-* Added NPS Alert content model
-* Added editor‑lock pattern for machine‑synced content
-* Refined headless routing behavior
+
+- Added NPS Alert content model
+- Added editor‑lock pattern for machine‑synced content
+- Refined headless routing behavior
 
 = 0.1.0 =
-* Initial release
-* Resources, Collections, People, Groups
+
+- Initial release
+- Resources, Collections, People, Groups
