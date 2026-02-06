@@ -387,3 +387,87 @@ add_action('template_redirect', function () {
 	include get_404_template();
 	exit;
 }, 0);
+
+/**
+ * -----------------------------
+ * NPS Alert Publish Webhook -> Node Gateway
+ * Fires when an nps_alert transitions to publish.
+ * -----------------------------
+ */
+
+add_action('transition_post_status', function ($new_status, $old_status, $post) {
+	if (! $post instanceof WP_Post) return;
+	if ($post->post_type !== 'nps_alert') return;
+
+	// Only on transition to new status (avoid re-sending on updates while already updated)
+	if ($old_status === $new_status) return;
+
+	cs_send_nps_alert_published_webhook($post->ID);
+}, 10, 3);
+
+/**
+ * Build + send webhook to Node.
+ */
+function cs_send_nps_alert_published_webhook(int $post_id): void
+{
+	$url    = defined('CS_NODE_WEBHOOK_URL') ? CS_NODE_WEBHOOK_URL : '';
+	$secret = defined('CS_NODE_WEBHOOK_SECRET') ? CS_NODE_WEBHOOK_SECRET : '';
+
+	if (! $url || ! $secret) {
+		error_log('[cs-headless-content] Missing CS_NODE_WEBHOOK_URL or CS_NODE_WEBHOOK_SECRET');
+		return;
+	}
+
+	$nps_id = (string) get_post_meta($post_id, 'nps_id', true);
+
+	$payload = [
+		'event'       => 'nps_alert.published',
+		'wpPostId'    => $post_id,
+		'npsId'       => $nps_id ?: null,
+		'title'       => get_the_title($post_id),
+		'status'      => get_post_status($post_id),
+		'permalink'   => get_permalink($post_id),
+		'publishedAt' => get_post_field('post_date_gmt', $post_id) ?: gmdate('Y-m-d H:i:s'),
+	];
+
+	$body = wp_json_encode($payload);
+	if (! is_string($body)) {
+		error_log('[cs-headless-content] Failed to JSON encode webhook payload');
+		return;
+	}
+
+	$timestamp = (string) time();
+	$signature = hash_hmac('sha256', $timestamp . '.' . $body, $secret);
+
+	$args = [
+		'method'  => 'POST',
+		'timeout' => 10,
+		'headers' => [
+			'Content-Type'    => 'application/json',
+			'X-CS-Timestamp'  => $timestamp,
+			'X-CS-Signature'  => 'sha256=' . $signature,
+		],
+		'body' => $body,
+	];
+
+	// Dev convenience if you're using self-signed certs somewhere.
+	$sslverify = defined('CS_NODE_WEBHOOK_SSLVERIFY') ? (bool) CS_NODE_WEBHOOK_SSLVERIFY : true;
+	$args['sslverify'] = $sslverify;
+
+	$response = wp_remote_post($url, $args);
+
+	if (is_wp_error($response)) {
+		error_log('[cs-headless-content] Webhook failed: ' . $response->get_error_message());
+		return;
+	}
+
+	$code = wp_remote_retrieve_response_code($response);
+	if ($code < 200 || $code >= 300) {
+		$resp_body = wp_remote_retrieve_body($response);
+		error_log('[cs-headless-content] Webhook non-2xx: ' . $code . ' body=' . $resp_body);
+		return;
+	}
+
+	// Optional: record last webhook time
+	update_post_meta($post_id, 'cs_last_webhook_sent_at', gmdate('c'));
+}
